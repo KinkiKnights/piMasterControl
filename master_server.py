@@ -7,7 +7,7 @@ import signal
 import subprocess
 import threading
 from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import psutil
 
@@ -246,7 +246,11 @@ def main():
     APIHandler.pm  = pm
     APIHandler.cpu = cpu
 
-    server = HTTPServer(('0.0.0.0', PORT), APIHandler)
+    # ThreadingHTTPServer: ブラウザの同時接続(ページ取得+/statusポーリング等)を
+    # 並行処理する。単一スレッドのHTTPServerだと1接続の処理中に他がブロックされ、
+    # UIがハングしたように見える。
+    server = ThreadingHTTPServer(('0.0.0.0', PORT), APIHandler)
+    server.daemon_threads = True
     print(f'[Robot Master] Listening on port {PORT}')
     try:
         server.serve_forever()
