@@ -3,6 +3,7 @@
 
 import json
 import os
+import signal
 import subprocess
 import threading
 from datetime import datetime
@@ -14,6 +15,31 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROGRAMS_FILE = os.path.join(BASE_DIR, 'programs.json')
 INDEX_FILE    = os.path.join(BASE_DIR, 'index.html')
 PORT = 80
+
+
+def _terminate_tree(proc):
+    """Terminate a program and ALL its descendants.
+
+    Programs are launched with start_new_session=True, so the child becomes the
+    leader of a new process group. Signalling that whole group (killpg) ensures
+    grandchildren such as `ros2 run`'s node or the camera publisher are killed
+    too — a plain proc.terminate() would only kill the immediate shell and leave
+    the real worker orphaned (camera/port stays busy and restart fails).
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 class ProcessManager:
@@ -31,7 +57,8 @@ class ProcessManager:
             if self._running(prog):
                 return False, f"#{prog_id} is already running"
             try:
-                kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              start_new_session=True)
                 if prog['type'] == 'ros2':
                     cmd = f'source /opt/ros/jazzy/setup.bash && {prog["cmd"]}'
                     proc = subprocess.Popen(cmd, shell=True, executable='/bin/bash', **kwargs)
@@ -50,11 +77,7 @@ class ProcessManager:
             if not self._running(prog):
                 return False, f"#{prog_id} is not running"
             try:
-                prog['process'].terminate()
-                try:
-                    prog['process'].wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    prog['process'].kill()
+                _terminate_tree(prog['process'])
                 prog['process'] = None
                 return True, f"#{prog_id} stopped"
             except Exception as e:
@@ -64,11 +87,7 @@ class ProcessManager:
         with self._lock:
             prog = self.programs.get(prog_id)
             if prog and self._running(prog):
-                prog['process'].terminate()
-                try:
-                    prog['process'].wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    prog['process'].kill()
+                _terminate_tree(prog['process'])
                 prog['process'] = None
         return self.start(prog_id)
 
@@ -98,11 +117,7 @@ class ProcessManager:
             for pid, prog in list(self.programs.items()):
                 changed = any(c['id'] == pid and c['cmd'] != prog['cmd'] for c in new_configs)
                 if (pid not in new_ids or changed) and self._running(prog):
-                    prog['process'].terminate()
-                    try:
-                        prog['process'].wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        prog['process'].kill()
+                    _terminate_tree(prog['process'])
             with open(PROGRAMS_FILE, 'w') as f:
                 json.dump(new_configs, f, ensure_ascii=False, indent=2)
             self.programs = {c['id']: dict(c, process=None) for c in new_configs}
