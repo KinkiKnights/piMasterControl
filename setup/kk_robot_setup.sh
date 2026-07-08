@@ -9,7 +9,8 @@
 #    2. 2GB スワップ領域の作成
 #    3. ubuntu-desktop / ros-jazzy-desktop と関連ツールの導入
 #    4. kk_rescue26_pi 各コンポーネントの依存パッケージ導入
-#       (USB WiFi ドングル RTL8811AU の DKMS ドライバ導入を含む)
+#       (USB WiFi ドングル RTL8811AU の DKMS ドライバは既定で無効。
+#        有効化するには SETUP_WIFI_DONGLE=1 を付けて実行する)
 #    5. ROS2 ワークスペース kk_ws の作成とリポジトリのクローン
 #       (kk_rescue26_pi + .repos の外部依存: ros2_socketcan)
 #    6. colcon ビルド
@@ -182,25 +183,41 @@ sudo apt-get install -y \
 sudo apt-get install -y gstreamer1.0-libcamera libcamera-tools gstreamer1.0-plugins-ugly 2>/dev/null \
   || log "   (任意パッケージはスキップ)"
 
-log "4-4. USB WiFi ドングルドライバ (RTL8811AU: BUFFALO WI-U2-433 等)"
-# 詳細は docs/usb-wifi-dongle.md を参照。DKMS 導入によりカーネル更新後も自動再ビルド。
-# ドングル未挿入でも導入しておけば、挿した時点で udev が自動認識する。
-sudo apt-get install -y "linux-headers-$(uname -r)" dkms build-essential iw
-# Ubuntu の rtl8812au-dkms (2014年版) は RTL8811AU 非対応で強制バインド時に
-# カーネル oops を起こすため、誤ロードを封じる
-echo "blacklist 8812au" | sudo tee /etc/modprobe.d/blacklist-rtl8812au.conf >/dev/null
-if ! dkms status 2>/dev/null | grep -q '^rtl8821au/'; then
-  DRV_SRC=/tmp/8821au-20210708
-  rm -rf "${DRV_SRC}"
-  git clone --depth 1 https://github.com/morrownr/8821au-20210708.git "${DRV_SRC}"
-  DRV_VER="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "${DRV_SRC}/dkms.conf")"
-  sudo dkms add "${DRV_SRC}"
-  sudo dkms build  "rtl8821au/${DRV_VER}"
-  sudo dkms install "rtl8821au/${DRV_VER}"
-  rm -rf "${DRV_SRC}"
+# USB WiFi ドングルドライバ (RTL8811AU) は既定で無効。
+#   DKMS ビルドには稼働カーネルに一致する linux-headers-$(uname -r) が必須だが、
+#   アーカイブから当該ヘッダーが削除された古いカーネルで動作中の Pi では入手できず、
+#   set -e によりセットアップ全体が停止してしまうため。
+#   ドングルを使う Pi では SETUP_WIFI_DONGLE=1 を付けて実行する。
+#     前提: sudo apt install linux-image-raspi linux-headers-raspi で最新カーネルに
+#           更新して再起動し、uname -r と一致するヘッダーが入手可能な状態にしておく。
+SETUP_WIFI_DONGLE="${SETUP_WIFI_DONGLE:-0}"
+if [ "${SETUP_WIFI_DONGLE}" = "1" ]; then
+  log "4-4. USB WiFi ドングルドライバ (RTL8811AU: BUFFALO WI-U2-433 等)"
+  # 詳細は docs/usb-wifi-dongle.md を参照。DKMS 導入によりカーネル更新後も自動再ビルド。
+  KHDR="linux-headers-$(uname -r)"
+  if sudo apt-get install -y --dry-run "${KHDR}" >/dev/null 2>&1; then
+    sudo apt-get install -y "${KHDR}" dkms build-essential iw
+    # Ubuntu の rtl8812au-dkms (2014年版) は RTL8811AU 非対応で強制バインド時に
+    # カーネル oops を起こすため、誤ロードを封じる
+    echo "blacklist 8812au" | sudo tee /etc/modprobe.d/blacklist-rtl8812au.conf >/dev/null
+    if ! dkms status 2>/dev/null | grep -q '^rtl8821au/'; then
+      DRV_SRC=/tmp/8821au-20210708
+      rm -rf "${DRV_SRC}"
+      git clone --depth 1 https://github.com/morrownr/8821au-20210708.git "${DRV_SRC}"
+      DRV_VER="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "${DRV_SRC}/dkms.conf")"
+      sudo dkms add "${DRV_SRC}"
+      sudo dkms build  "rtl8821au/${DRV_VER}"
+      sudo dkms install "rtl8821au/${DRV_VER}"
+      rm -rf "${DRV_SRC}"
+    fi
+    sudo modprobe 8821au 2>/dev/null || true   # ドングル未挿入でもロード自体は可
+    log "   -> $(dkms status | grep '^rtl8821au/' || echo 'rtl8821au 未導入(要確認)')"
+  else
+    log "4-4. WiFi ドングルドライバをスキップ: ${KHDR} が入手不可(カーネル更新+再起動後に SETUP_WIFI_DONGLE=1 で再実行)"
+  fi
+else
+  log "4-4. USB WiFi ドングルドライバは既定で無効 (有効化するには SETUP_WIFI_DONGLE=1 を付けて実行)"
 fi
-sudo modprobe 8821au 2>/dev/null || true   # ドングル未挿入でもロード自体は可
-log "   -> $(dkms status | grep '^rtl8821au/' || echo 'rtl8821au 未導入(要確認)')"
 
 # =============================================================================
 # 5. ROS2 ワークスペース kk_ws の作成とリポジトリのクローン
@@ -233,7 +250,9 @@ chmod +x "${REPO_DIR}/camera_publisher/"*.sh "${REPO_DIR}/mic_publisher/"*.sh
 log "6. rosdep 解決と colcon ビルド"
 sudo rosdep init 2>/dev/null || true
 rosdep update
-source "/opt/ros/${ROS_DISTRO}/setup.bash"
+# ROS の setup.bash は AMENT_TRACE_SETUP_FILES 等の未定義変数を参照するため、
+# nounset (set -u) 下ではそのまま source すると失敗する。source の間だけ無効化する。
+set +u; source "/opt/ros/${ROS_DISTRO}/setup.bash"; set -u
 cd "${WS}"
 rosdep install --from-paths src --ignore-src -r -y || log "   (rosdep 一部スキップ)"
 colcon build --symlink-install
@@ -295,7 +314,7 @@ log "9. セルフチェック"
 sleep 2
 systemctl is-active --quiet master-control.service && echo "   [OK] master-control 稼働中" || echo "   [NG] master-control 停止"
 curl -s -o /dev/null --max-time 5 -w "   [HTTP %{http_code}] master control UI\n" "http://127.0.0.1:80/" || echo "   [NG] UI 応答なし"
-source "/opt/ros/${ROS_DISTRO}/setup.bash"; source "${WS}/install/setup.bash" 2>/dev/null || true
+set +u; source "/opt/ros/${ROS_DISTRO}/setup.bash" 2>/dev/null || true; source "${WS}/install/setup.bash" 2>/dev/null || true; set -u
 ros2 pkg executables joy_node_web 2>/dev/null | grep -q joy_node && echo "   [OK] joy_node_web ビルド済み" || echo "   [NG] joy_node_web 未ビルド"
 ls "${REPO_DIR}/camera_publisher/publish-${PI_MODEL}.sh" >/dev/null 2>&1 && echo "   [OK] camera publisher 配置済み" || echo "   [NG] camera publisher なし"
 ls "${REPO_DIR}/mic_publisher/mic-publish.sh" >/dev/null 2>&1 && echo "   [OK] mic publisher 配置済み" || echo "   [NG] mic publisher なし"

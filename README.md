@@ -28,7 +28,11 @@ RELAY_HOST=192.168.137.1 bash -c '...(上と同じ)...'
 キー登録後は、セットアップ本体の冒頭でも SSH 認証を再確認します(認証済みなら
 そのまま進行)。最初の `sudo` で1度だけパスワードを聞かれます(以後は NOPASSWD 設定)。
 `PI_ID` はホスト名から自動生成されます(例: `kk06` → `KK06`)。
-USB WiFi ドングル(RTL8811AU)のドライバも自動導入されます
+USB WiFi ドングル(RTL8811AU)のドライバ導入は既定で**無効**です。DKMS ビルドには
+稼働カーネルに一致する `linux-headers-$(uname -r)` が必要で、ヘッダーが入手できない
+古いカーネルの Pi では導入が失敗してしまうためです。ドングルを使う Pi では、先に
+`sudo apt install linux-image-raspi linux-headers-raspi` で最新カーネルへ更新して
+再起動し、ワンライナー先頭に `SETUP_WIFI_DONGLE=1` を付けて実行してください
 (接続設定は [docs/usb-wifi-dongle.md](docs/usb-wifi-dongle.md) 参照)。
 
 <details><summary>手動で clone して実行する場合 / 公開リポジトリの場合</summary>
