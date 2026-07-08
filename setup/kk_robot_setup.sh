@@ -4,30 +4,38 @@
 # -----------------------------------------------------------------------------
 #  対象: Raspberry Pi 5 (aarch64) + Ubuntu 24.04 LTS
 #  内容:
+#    0. GitHub 用 SSH キーの生成・表示(ユーザーが GitHub に登録するまで待機)
 #    1. パスワード無し sudo の設定
 #    2. 2GB スワップ領域の作成
 #    3. ubuntu-desktop / ros-jazzy-desktop と関連ツールの導入
-#    4. kk_rescue_pi 各コンポーネントの依存パッケージ導入
+#    4. kk_rescue26_pi 各コンポーネントの依存パッケージ導入
+#       (USB WiFi ドングル RTL8811AU の DKMS ドライバ導入を含む)
 #    5. ROS2 ワークスペース kk_ws の作成とリポジトリのクローン
-#       (kk_rescue_pi / ros2_socketcan)
+#       (kk_rescue26_pi + .repos の外部依存: ros2_socketcan)
 #    6. colcon ビルド
 #    7. master control の自動起動(systemd)設定
 #    8. ~/.bashrc への ROS2 source 追記
 #
-#  Pi 上で動くプログラムはすべて kk_rescue_pi リポジトリに集約されています:
+#  Pi 上で動くプログラムは kk_rescue26_pi リポジトリに集約されています:
 #    - master_control/     : Web UI つきプログラム起動管理サーバ (port 80)
 #    - camera_publisher/   : USB カメラ → WebRTC 配信 (relay へ)
 #    - mic_publisher/      : USB マイク → FLAC ロスレス TCP 配信
-#    - ros2/joy_node_web/  : Web ゲームパッド → sensor_msgs/Joy (colcon 対象)
+#    - ros2/joy_node_web/  : Web ゲームパッド → sensor_msgs/Joy (submodule, colcon 対象)
+#  外部 OSS は setup/kk_rescue26_pi.repos で参照(vcs import):
+#    - ros2_socketcan      : CAN 通信 (上流 OSS)
 #
 #  ※ webrtc の中継(SFU=relay)サーバとビューアは「別マシン」で動かします
 #    (ClaudeShareContents/webrtc-camera の relay/web を参照)。relay は
 #    RELAY_HOST:8080。publisher は relay が落ちても自動再接続します。
 #
-#  使い方:
-#    git clone https://github.com/KinkiKnights/kk_rescue_pi.git
-#    ./kk_rescue_pi/setup/kk_robot_setup.sh
-#    RELAY_HOST=192.168.137.1 ./kk_rescue_pi/setup/kk_robot_setup.sh  # 中継IP変更時
+#  使い方: README.md の「クイックスタート」のワンライナーを推奨。
+#    (SSH キー生成→登録待ち→SSH clone→本スクリプト、の自己完結ブートストラップ。
+#     非公開リポジトリでも動作する)
+#  手動 clone の場合(SSH キー登録後):
+#    git clone --recursive git@github.com:KinkiKnights/kk_rescue26_pi.git
+#    ./kk_rescue26_pi/setup/kk_robot_setup.sh
+#  リポジトリが公開の間は raw URL 経由も可:
+#    curl -fsSL https://raw.githubusercontent.com/KinkiKnights/kk_rescue26_pi/main/setup/kk_robot_setup.sh | bash
 #
 #  ※ 別のラズパイでもそのまま実行できます。PI_ID はホスト名から自動生成します
 #    (例: hostname=kk06 → PI_ID=KK06)。
@@ -37,8 +45,9 @@ set -euo pipefail
 # ---- 設定(必要に応じて変更)------------------------------------------------
 ROS_DISTRO="jazzy"
 WS="$HOME/kk_ws"                                   # ワークスペース
-REPO_URL="https://github.com/KinkiKnights/kk_rescue_pi.git"
-REPO_DIR="${WS}/src/kk_rescue_pi"
+REPO_SSH="git@github.com:KinkiKnights/kk_rescue26_pi.git"      # 優先 (手順0のキーで認証)
+REPO_URL="https://github.com/KinkiKnights/kk_rescue26_pi.git"  # 公開リポジトリ時のフォールバック
+REPO_DIR="${WS}/src/kk_rescue26_pi"
 PI_MODEL="pi5"                                     # publish-${PI_MODEL}.sh を使用 (pi4=HW / pi5=SW)
 RELAY_HOST="${RELAY_HOST:-192.168.137.1}"          # webrtc 中継(SFU)サーバのIP
 RELAY_URL="ws://${RELAY_HOST}:8080/ws"
@@ -54,6 +63,52 @@ MIC_PORT="${MIC_PORT:-5005}"             # 配信TCPポート
 USER_NAME="$(id -un)"
 
 log() { printf '\033[1;36m[kk-setup]\033[0m %s\n' "$*"; }
+
+# =============================================================================
+# 0. GitHub 用 SSH キーの生成と登録待ち
+#    push や非公開リポジトリのアクセスに使う ed25519 キーを用意し、公開鍵を表示。
+#    ユーザーが GitHub に登録して Enter を押すまで待つ(既に認証できる場合はスキップ)。
+#    ※ curl | bash 実行時は stdin がスクリプト本文のため、入力は /dev/tty から読む。
+# =============================================================================
+log "0. GitHub 用 SSH キーを確認"
+if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
+  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  ssh-keygen -t ed25519 -C "$(hostname)-github" -f "$HOME/.ssh/id_ed25519" -N "" -q
+  log "   -> 新しいキーを生成しました"
+fi
+gh_auth_ok() {
+  ssh -T -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+      git@github.com 2>&1 | grep -q "successfully authenticated"
+}
+if gh_auth_ok; then
+  log "   -> GitHub に認証済み(登録作業は不要)"
+else
+  echo "=================================================================="
+  echo " 以下の公開鍵をコピーして GitHub に登録してください:"
+  echo "   - アカウント全体で使う場合: https://github.com/settings/keys"
+  echo "   - リポジトリ単位の場合   : 各リポジトリ Settings -> Deploy keys"
+  echo "------------------------------------------------------------------"
+  cat "$HOME/.ssh/id_ed25519.pub"
+  echo "=================================================================="
+  # /dev/tty はノードが存在しても制御端末が無いと開けないため、実 open で判定する
+  if ( : < /dev/tty ) 2>/dev/null; then
+    while true; do
+      printf '登録が完了したら Enter を押してください (登録せず続行する場合は s + Enter): '
+      read -r ans < /dev/tty
+      if [ "${ans:-}" = "s" ]; then
+        log "   -> キー登録をスキップして続行します"
+        break
+      fi
+      if gh_auth_ok; then
+        log "   -> GitHub 認証を確認できました"
+        break
+      fi
+      echo "   まだ GitHub に認証できません。登録内容を確認してください。"
+    done
+  else
+    log "   (対話端末が無いため登録待ちをスキップします。上記キーは ~/.ssh/id_ed25519.pub)"
+  fi
+fi
 
 # =============================================================================
 # 1. パスワード無し sudo の設定
@@ -127,23 +182,51 @@ sudo apt-get install -y \
 sudo apt-get install -y gstreamer1.0-libcamera libcamera-tools gstreamer1.0-plugins-ugly 2>/dev/null \
   || log "   (任意パッケージはスキップ)"
 
+log "4-4. USB WiFi ドングルドライバ (RTL8811AU: BUFFALO WI-U2-433 等)"
+# 詳細は docs/usb-wifi-dongle.md を参照。DKMS 導入によりカーネル更新後も自動再ビルド。
+# ドングル未挿入でも導入しておけば、挿した時点で udev が自動認識する。
+sudo apt-get install -y "linux-headers-$(uname -r)" dkms build-essential iw
+# Ubuntu の rtl8812au-dkms (2014年版) は RTL8811AU 非対応で強制バインド時に
+# カーネル oops を起こすため、誤ロードを封じる
+echo "blacklist 8812au" | sudo tee /etc/modprobe.d/blacklist-rtl8812au.conf >/dev/null
+if ! dkms status 2>/dev/null | grep -q '^rtl8821au/'; then
+  DRV_SRC=/tmp/8821au-20210708
+  rm -rf "${DRV_SRC}"
+  git clone --depth 1 https://github.com/morrownr/8821au-20210708.git "${DRV_SRC}"
+  DRV_VER="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "${DRV_SRC}/dkms.conf")"
+  sudo dkms add "${DRV_SRC}"
+  sudo dkms build  "rtl8821au/${DRV_VER}"
+  sudo dkms install "rtl8821au/${DRV_VER}"
+  rm -rf "${DRV_SRC}"
+fi
+sudo modprobe 8821au 2>/dev/null || true   # ドングル未挿入でもロード自体は可
+log "   -> $(dkms status | grep '^rtl8821au/' || echo 'rtl8821au 未導入(要確認)')"
+
 # =============================================================================
 # 5. ROS2 ワークスペース kk_ws の作成とリポジトリのクローン
-#    Pi 側プログラムは kk_rescue_pi に集約済み。外部依存 (ros2_socketcan) は
-#    setup/kk_rescue_pi.repos に定義し vcstool で取得します。
+#    Pi 側プログラムは kk_rescue26_pi に集約。joy_node_web は submodule
+#    (ros2/joy_node_web) として固定コミットで含む → submodule init が必要。
+#    外部 OSS (ros2_socketcan) のみ setup/kk_rescue26_pi.repos に定義し
+#    vcstool で取得します。
 # =============================================================================
 log "5. ワークスペース ${WS} を作成しリポジトリをクローン"
 mkdir -p "${WS}/src"
 cd "${WS}/src"
 
-[ -d "${REPO_DIR}" ] || git clone "${REPO_URL}" "${REPO_DIR}"
-vcs import "${WS}/src" < "${REPO_DIR}/setup/kk_rescue_pi.repos"
+# --recursive で submodule (joy_node_web) も同時に取得。既存 clone の場合に
+# 備え submodule update も明示実行(未取得なら空ディレクトリ→ビルド失敗を防ぐ)。
+# clone は SSH (手順0で登録したキー) を優先し、失敗時のみ HTTPS (公開時のみ有効)。
+[ -d "${REPO_DIR}" ] \
+  || GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new" git clone --recursive "${REPO_SSH}" "${REPO_DIR}" \
+  || git clone --recursive "${REPO_URL}" "${REPO_DIR}"
+git -C "${REPO_DIR}" submodule update --init --recursive
+vcs import "${WS}/src" < "${REPO_DIR}/setup/kk_rescue26_pi.repos"
 chmod +x "${REPO_DIR}/camera_publisher/"*.sh "${REPO_DIR}/mic_publisher/"*.sh
 
 # =============================================================================
 # 6. rosdep 初期化 と colcon ビルド
 #    colcon は package.xml を持つパッケージのみビルド:
-#      kk_rescue_pi/ros2/joy_node_web / ros2_socketcan / ros2_socketcan_msgs
+#      kk_rescue26_pi/ros2/joy_node_web / ros2_socketcan / ros2_socketcan_msgs
 #    (master_control / camera_publisher / mic_publisher は ROS パッケージではない)
 #    rosdep が ros2_socketcan の依存 (ros-jazzy-can-msgs 等) を自動導入します。
 # =============================================================================
@@ -171,7 +254,7 @@ JSON
 log "7-2. master-control.service を作成(kk ユーザで port 80 を bind)"
 sudo tee /etc/systemd/system/master-control.service >/dev/null <<UNIT
 [Unit]
-Description=kk_rescue_pi Master Control
+Description=kk_rescue26_pi Master Control
 After=network-online.target
 Wants=network-online.target
 
@@ -216,6 +299,7 @@ source "/opt/ros/${ROS_DISTRO}/setup.bash"; source "${WS}/install/setup.bash" 2>
 ros2 pkg executables joy_node_web 2>/dev/null | grep -q joy_node && echo "   [OK] joy_node_web ビルド済み" || echo "   [NG] joy_node_web 未ビルド"
 ls "${REPO_DIR}/camera_publisher/publish-${PI_MODEL}.sh" >/dev/null 2>&1 && echo "   [OK] camera publisher 配置済み" || echo "   [NG] camera publisher なし"
 ls "${REPO_DIR}/mic_publisher/mic-publish.sh" >/dev/null 2>&1 && echo "   [OK] mic publisher 配置済み" || echo "   [NG] mic publisher なし"
+dkms status 2>/dev/null | grep -q '^rtl8821au/' && echo "   [OK] WiFi ドングルドライバ (rtl8821au) 導入済み" || echo "   [NG] rtl8821au 未導入"
 
 log "=== セットアップ完了 ==="
 echo "  - master control:  http://<このPiのIP>/        (port 80, 自動起動済み)"
