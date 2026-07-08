@@ -4,10 +4,12 @@
 # -----------------------------------------------------------------------------
 #  対象: Raspberry Pi 5 (aarch64) + Ubuntu 24.04 LTS
 #  内容:
+#    0. GitHub 用 SSH キーの生成・表示(ユーザーが GitHub に登録するまで待機)
 #    1. パスワード無し sudo の設定
 #    2. 2GB スワップ領域の作成
 #    3. ubuntu-desktop / ros-jazzy-desktop と関連ツールの導入
 #    4. kk_rescue26_pi 各コンポーネントの依存パッケージ導入
+#       (USB WiFi ドングル RTL8811AU の DKMS ドライバ導入を含む)
 #    5. ROS2 ワークスペース kk_ws の作成とリポジトリのクローン
 #       (kk_rescue26_pi + .repos の外部依存: ros2_socketcan)
 #    6. colcon ビルド
@@ -58,6 +60,52 @@ MIC_PORT="${MIC_PORT:-5005}"             # 配信TCPポート
 USER_NAME="$(id -un)"
 
 log() { printf '\033[1;36m[kk-setup]\033[0m %s\n' "$*"; }
+
+# =============================================================================
+# 0. GitHub 用 SSH キーの生成と登録待ち
+#    push や非公開リポジトリのアクセスに使う ed25519 キーを用意し、公開鍵を表示。
+#    ユーザーが GitHub に登録して Enter を押すまで待つ(既に認証できる場合はスキップ)。
+#    ※ curl | bash 実行時は stdin がスクリプト本文のため、入力は /dev/tty から読む。
+# =============================================================================
+log "0. GitHub 用 SSH キーを確認"
+if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
+  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  ssh-keygen -t ed25519 -C "$(hostname)-github" -f "$HOME/.ssh/id_ed25519" -N "" -q
+  log "   -> 新しいキーを生成しました"
+fi
+gh_auth_ok() {
+  ssh -T -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+      git@github.com 2>&1 | grep -q "successfully authenticated"
+}
+if gh_auth_ok; then
+  log "   -> GitHub に認証済み(登録作業は不要)"
+else
+  echo "=================================================================="
+  echo " 以下の公開鍵をコピーして GitHub に登録してください:"
+  echo "   - アカウント全体で使う場合: https://github.com/settings/keys"
+  echo "   - リポジトリ単位の場合   : 各リポジトリ Settings -> Deploy keys"
+  echo "------------------------------------------------------------------"
+  cat "$HOME/.ssh/id_ed25519.pub"
+  echo "=================================================================="
+  # /dev/tty はノードが存在しても制御端末が無いと開けないため、実 open で判定する
+  if ( : < /dev/tty ) 2>/dev/null; then
+    while true; do
+      printf '登録が完了したら Enter を押してください (登録せず続行する場合は s + Enter): '
+      read -r ans < /dev/tty
+      if [ "${ans:-}" = "s" ]; then
+        log "   -> キー登録をスキップして続行します"
+        break
+      fi
+      if gh_auth_ok; then
+        log "   -> GitHub 認証を確認できました"
+        break
+      fi
+      echo "   まだ GitHub に認証できません。登録内容を確認してください。"
+    done
+  else
+    log "   (対話端末が無いため登録待ちをスキップします。上記キーは ~/.ssh/id_ed25519.pub)"
+  fi
+fi
 
 # =============================================================================
 # 1. パスワード無し sudo の設定
@@ -130,6 +178,26 @@ sudo apt-get install -y \
 # CSIカメラ等の任意パッケージ(無い環境では無視)
 sudo apt-get install -y gstreamer1.0-libcamera libcamera-tools gstreamer1.0-plugins-ugly 2>/dev/null \
   || log "   (任意パッケージはスキップ)"
+
+log "4-4. USB WiFi ドングルドライバ (RTL8811AU: BUFFALO WI-U2-433 等)"
+# 詳細は docs/usb-wifi-dongle.md を参照。DKMS 導入によりカーネル更新後も自動再ビルド。
+# ドングル未挿入でも導入しておけば、挿した時点で udev が自動認識する。
+sudo apt-get install -y "linux-headers-$(uname -r)" dkms build-essential iw
+# Ubuntu の rtl8812au-dkms (2014年版) は RTL8811AU 非対応で強制バインド時に
+# カーネル oops を起こすため、誤ロードを封じる
+echo "blacklist 8812au" | sudo tee /etc/modprobe.d/blacklist-rtl8812au.conf >/dev/null
+if ! dkms status 2>/dev/null | grep -q '^rtl8821au/'; then
+  DRV_SRC=/tmp/8821au-20210708
+  rm -rf "${DRV_SRC}"
+  git clone --depth 1 https://github.com/morrownr/8821au-20210708.git "${DRV_SRC}"
+  DRV_VER="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "${DRV_SRC}/dkms.conf")"
+  sudo dkms add "${DRV_SRC}"
+  sudo dkms build  "rtl8821au/${DRV_VER}"
+  sudo dkms install "rtl8821au/${DRV_VER}"
+  rm -rf "${DRV_SRC}"
+fi
+sudo modprobe 8821au 2>/dev/null || true   # ドングル未挿入でもロード自体は可
+log "   -> $(dkms status | grep '^rtl8821au/' || echo 'rtl8821au 未導入(要確認)')"
 
 # =============================================================================
 # 5. ROS2 ワークスペース kk_ws の作成とリポジトリのクローン
@@ -225,6 +293,7 @@ source "/opt/ros/${ROS_DISTRO}/setup.bash"; source "${WS}/install/setup.bash" 2>
 ros2 pkg executables joy_node_web 2>/dev/null | grep -q joy_node && echo "   [OK] joy_node_web ビルド済み" || echo "   [NG] joy_node_web 未ビルド"
 ls "${REPO_DIR}/camera_publisher/publish-${PI_MODEL}.sh" >/dev/null 2>&1 && echo "   [OK] camera publisher 配置済み" || echo "   [NG] camera publisher なし"
 ls "${REPO_DIR}/mic_publisher/mic-publish.sh" >/dev/null 2>&1 && echo "   [OK] mic publisher 配置済み" || echo "   [NG] mic publisher なし"
+dkms status 2>/dev/null | grep -q '^rtl8821au/' && echo "   [OK] WiFi ドングルドライバ (rtl8821au) 導入済み" || echo "   [NG] rtl8821au 未導入"
 
 log "=== セットアップ完了 ==="
 echo "  - master control:  http://<このPiのIP>/        (port 80, 自動起動済み)"

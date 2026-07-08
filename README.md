@@ -22,8 +22,11 @@ curl -fsSL https://raw.githubusercontent.com/KinkiKnights/kk_rescue26_pi/main/se
 # CSI カメラの例: ... | CAM1_SRC=libcamerasrc bash
 ```
 
-最初の `sudo` で1度だけパスワードを聞かれます(以後は NOPASSWD 設定)。`PI_ID` は
-ホスト名から自動生成されます(例: `kk06` → `KK06`)。
+実行するとまず **GitHub 登録用の SSH 公開鍵が表示され、登録して Enter を押すまで待機**します
+(登録済み or 登録せず続行なら `s` + Enter でスキップ)。最初の `sudo` で1度だけパスワードを
+聞かれます(以後は NOPASSWD 設定)。`PI_ID` はホスト名から自動生成されます(例: `kk06` → `KK06`)。
+USB WiFi ドングル(RTL8811AU)のドライバも自動導入されます
+(接続設定は [docs/usb-wifi-dongle.md](docs/usb-wifi-dongle.md) 参照)。
 
 <details><summary>手動で clone して実行する場合</summary>
 
