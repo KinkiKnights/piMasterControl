@@ -26,10 +26,12 @@
 #    (ClaudeShareContents/webrtc-camera の relay/web を参照)。relay は
 #    RELAY_HOST:8080。publisher は relay が落ちても自動再接続します。
 #
-#  使い方:
-#    git clone https://github.com/KinkiKnights/kk_rescue26_pi.git
+#  使い方(ワンライナー。clone/submodule/依存/ビルド/自動起動まで自己完結):
+#    curl -fsSL https://raw.githubusercontent.com/KinkiKnights/kk_rescue26_pi/main/setup/kk_robot_setup.sh | bash
+#    # 中継IP変更: ... | RELAY_HOST=192.168.137.1 bash
+#  手動 clone の場合:
+#    git clone --recursive https://github.com/KinkiKnights/kk_rescue26_pi.git
 #    ./kk_rescue26_pi/setup/kk_robot_setup.sh
-#    RELAY_HOST=192.168.137.1 ./kk_rescue26_pi/setup/kk_robot_setup.sh  # 中継IP変更時
 #
 #  ※ 別のラズパイでもそのまま実行できます。PI_ID はホスト名から自動生成します
 #    (例: hostname=kk06 → PI_ID=KK06)。
