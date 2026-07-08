@@ -18,8 +18,8 @@ git clone https://github.com/KinkiKnights/kk_rescue26_pi.git
 
 ## 構成
 
-Pi 固有のプログラムだけを本リポジトリに置き、汎用/外部の ROS2 パッケージ
-(joy_node_web / ros2_socketcan)は `setup/kk_rescue26_pi.repos` で別リポジトリを参照します。
+Pi 上で動くプログラムを本リポジトリに集約します(joy_node_web も取り込み)。
+外部 OSS の ros2_socketcan のみ `setup/kk_rescue26_pi.repos` で参照します。
 
 ```
 kk_rescue26_pi/
@@ -28,12 +28,13 @@ kk_rescue26_pi/
 │   └── programs.json    #   このPi固有の登録内容 (セットアップスクリプトが生成)
 ├── camera_publisher/    # USB カメラ → WebRTC 配信 (外部 relay へ)
 ├── mic_publisher/       # USB マイク → FLAC ロスレス TCP 配信 (:5005)
+├── ros2/
+│   └── joy_node_web/    # Web ゲームパッド → sensor_msgs/Joy (colcon 対象, :8700/joy)
 └── setup/
     ├── kk_robot_setup.sh      # Pi 一括セットアップ (systemd ユニットもここで生成)
-    └── kk_rescue26_pi.repos   # 外部依存 (joy_node_web / ros2_socketcan) の vcstool 定義
+    └── kk_rescue26_pi.repos   # 外部依存 (ros2_socketcan) の vcstool 定義
 
 # .repos で ~/kk_ws/src に別途 clone される (colcon ビルド対象):
-#   joy_node_web/     Web ゲームパッド → sensor_msgs/Joy (:8700/joy)
 #   ros2_socketcan/   CAN 通信
 ```
 
@@ -54,28 +55,43 @@ kk_rescue26_pi/
 
 | コンポーネント | 正式な置き場所 (single source of truth) |
 |---|---|
-| master_control / camera_publisher / mic_publisher | **このリポジトリ** |
-| joy_node_web | [KinkiKnights/joy_node_web](https://github.com/KinkiKnights/joy_node_web)(他ロボットでも使う汎用パッケージ。取り込まず `.repos` で参照) |
+| master_control / camera_publisher / mic_publisher / joy_node_web | **このリポジトリ** |
 | ros2_socketcan | [autowarefoundation/ros2_socketcan](https://github.com/autowarefoundation/ros2_socketcan)(上流 OSS。取り込まず `.repos` で参照) |
 | webrtc relay(SFU)・web ビューア | [ClaudeShareContents/webrtc-camera](https://github.com/sanjofumihiro/ClaudeShareContents)(`publisher/` は本リポジトリへ移設済み) |
 | mic receiver | [KinkiKnights/MicStreamRes2026](https://github.com/KinkiKnights/MicStreamRes2026)(`publisher/` は本リポジトリへ移設済み) |
 
-### 二重管理の回避
+### joy_node_web の二重管理について
 
-- **joy_node_web は取り込まない。** 単体で他プロジェクトでも使うため、本リポジトリには
-  コピーを置かず `.repos` から clone します。修正は joy_node_web リポジトリ側で行えば
-  全プロジェクトに反映されます。
-- **ネットワークで結合する相手(relay / receiver)とはプロトコル契約で結合。**
-  片側を変更したら、必ず対向リポジトリも同時に更新すること。
-  - `camera_publisher` ⇔ relay: WebSocket シグナリング (`ws://<relay>:8080/ws`)
-  - `mic_publisher` ⇔ receiver: FLAC over TCP (`:5005`)
+joy_node_web は他ロボットでも使う汎用パッケージで、単体リポジトリ
+[KinkiKnights/joy_node_web](https://github.com/KinkiKnights/joy_node_web) も残っています。
+運用の都合で本リポジトリ (`ros2/joy_node_web`) にも**取り込んで(vendoring)**います。
+つまり同じコードが2箇所に存在し、**乖離しうることを承知の上での構成**です。
+`ros2/joy_node_web` は `git subtree` で取り込んでいるため、必要になったら履歴付きで同期できます:
 
-  詳細は各ディレクトリの README を参照。
+```bash
+# 単体リポジトリの更新を取り込む
+git subtree pull --prefix=ros2/joy_node_web \
+  https://github.com/KinkiKnights/joy_node_web.git main --squash
+
+# 本リポジトリ側の修正を単体リポジトリへ戻す
+git subtree push --prefix=ros2/joy_node_web \
+  https://github.com/KinkiKnights/joy_node_web.git <branch>
+```
+
+### プロトコル契約(乖離防止)
+
+ネットワークで結合する相手(relay / receiver)とはプロトコル契約で結合しています。
+**片側を変更したら、必ず対向リポジトリも同時に更新すること。**
+
+- `camera_publisher` ⇔ relay: WebSocket シグナリング (`ws://<relay>:8080/ws`)
+- `mic_publisher` ⇔ receiver: FLAC over TCP (`:5005`)
+
+詳細は各ディレクトリの README を参照。
 
 ### 外部依存の更新
 
 ```bash
-vcs pull ~/kk_ws/src          # joy_node_web / ros2_socketcan を上流に追従
+vcs pull ~/kk_ws/src          # ros2_socketcan を上流に追従
 cd ~/kk_ws && colcon build
 ```
 
